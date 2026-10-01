@@ -1,2 +1,0 @@
-# kinjal-ui
-kinjal-ui

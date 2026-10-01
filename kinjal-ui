@@ -1,0 +1,1735 @@
+--================================================================================
+-- Kinjal The Script UI
+-- Модуль: ui.lua
+-- Назначение: собственная UI-библиотека для Roblox Studio.
+-- Возможности: градиенты, обводки, скругления, TweenService, мышь, touch,
+-- поиск вкладок, прокрутка сайдбара, статистика, масштабирование и контролы.
+--================================================================================
+
+--================================================================================
+-- [001] КЭШ СЕРВИСОВ И ЗАВИСИМОСТЕЙ
+--================================================================================
+
+local Roblox = game
+local Services = {}
+local UI = {}
+local Windows = {}
+
+local function getService(serviceName)
+	-- Безопасно получает сервис Roblox для текущего UI-модуля.
+	local ok, service = pcall(function()
+		return Roblox:GetService(serviceName)
+	end)
+
+	if ok then
+		return service
+	end
+
+	return nil
+end
+
+Services.Players = getService("Players")
+Services.TweenService = getService("TweenService")
+Services.UserInputService = getService("UserInputService")
+Services.GuiService = getService("GuiService")
+Services.RunService = getService("RunService")
+
+local Runtime
+local Config
+local moduleParent
+
+pcall(function()
+	moduleParent = script.Parent
+end)
+
+if moduleParent then
+	pcall(function()
+		Runtime = require(moduleParent:WaitForChild("runtime"))
+	end)
+
+	pcall(function()
+		Config = require(moduleParent:WaitForChild("config"))
+	end)
+end
+
+if not Runtime then
+	Runtime = {
+		GetLocalPlayer = function()
+			-- Возвращает локального игрока в резервном режиме библиотеки.
+			return Services.Players and Services.Players.LocalPlayer or nil
+		end,
+		GetPlatform = function()
+			-- Возвращает резервное имя платформы.
+			return "Unknown"
+		end,
+		SafeCall = function(callback)
+			-- Выполняет callback через pcall в резервном режиме.
+			return pcall(callback)
+		end,
+	}
+end
+
+if not Config then
+	Config = {
+		Get = function(_, fallback)
+			-- Возвращает fallback, если библиотека загружена без config.lua.
+			return fallback
+		end,
+	}
+end
+
+--================================================================================
+-- [002] ЦВЕТА И ПАРАМЕТРЫ
+--================================================================================
+
+local function setting(path, fallback)
+	-- Читает настройку через config.lua и возвращает fallback при ошибке.
+	local ok, value = pcall(function()
+		return Config.Get(path, fallback)
+	end)
+
+	if ok and value ~= nil then
+		return value
+	end
+
+	return fallback
+end
+
+local function themeColor(name, fallback)
+	-- Читает цвет текущей темы интерфейса.
+	return setting("Theme." .. name, fallback)
+end
+
+local Colors = {
+	Primary = themeColor("Primary", Color3.fromRGB(220, 92, 158)),
+	Secondary = themeColor("Secondary", Color3.fromRGB(245, 157, 202)),
+	Background = themeColor("Background", Color3.fromRGB(30, 24, 32)),
+	Panel = themeColor("Panel", Color3.fromRGB(53, 38, 53)),
+	PanelLight = themeColor("PanelLight", Color3.fromRGB(86, 57, 82)),
+	Text = themeColor("Text", Color3.fromRGB(255, 245, 252)),
+	MutedText = themeColor("MutedText", Color3.fromRGB(200, 175, 195)),
+	Outline = themeColor("Outline", Color3.fromRGB(10, 7, 12)),
+	Success = themeColor("Success", Color3.fromRGB(117, 220, 154)),
+	Warning = themeColor("Warning", Color3.fromRGB(250, 202, 104)),
+	Error = themeColor("Error", Color3.fromRGB(246, 100, 113)),
+}
+
+local DEFAULT_ANIMATION_TIME = 0.2
+local DEFAULT_CORNER_RADIUS = 10
+local DEFAULT_STROKE_THICKNESS = 1.5
+local DEFAULT_WINDOW_WIDTH = 760
+local DEFAULT_WINDOW_HEIGHT = 510
+local DEFAULT_SIDEBAR_WIDTH = 190
+local DEFAULT_COMPACT_SIDEBAR_WIDTH = 62
+
+--================================================================================
+-- [003] УТИЛИТЫ ЭКЗЕМПЛЯРОВ
+--================================================================================
+
+local function safeDestroy(instance)
+	-- Уничтожает Roblox-экземпляр через защищённый вызов.
+	if instance == nil then
+		return
+	end
+
+	pcall(function()
+		instance:Destroy()
+	end)
+end
+
+local function isAlive(instance)
+	-- Проверяет, что Roblox-экземпляр всё ещё находится в дереве.
+	if instance == nil then
+		return false
+	end
+
+	local ok, parent = pcall(function()
+		return instance.Parent
+	end)
+
+	return ok and parent ~= nil
+end
+
+local function setProperties(instance, properties)
+	-- Устанавливает свойства экземпляра, пропуская недоступные свойства.
+	if instance == nil or type(properties) ~= "table" then
+		return instance
+	end
+
+	for propertyName, value in pairs(properties) do
+		pcall(function()
+			instance[propertyName] = value
+		end)
+	end
+
+	return instance
+end
+
+local function create(className, properties, parent)
+	-- Создаёт экземпляр, применяет свойства и назначает родителя.
+	local ok, instance = pcall(function()
+		return Instance.new(className)
+	end)
+
+	if not ok or not instance then
+		return nil
+	end
+
+	setProperties(instance, properties)
+
+	if parent then
+		pcall(function()
+			instance.Parent = parent
+		end)
+	end
+
+	return instance
+end
+
+local function addCorner(parent, radius)
+	-- Добавляет UICorner с указанным радиусом.
+	local corner = create("UICorner", {
+		CornerRadius = UDim.new(0, radius or DEFAULT_CORNER_RADIUS),
+	}, parent)
+
+	return corner
+end
+
+local function addStroke(parent, color, thickness, transparency)
+	-- Добавляет чёрную или тематическую UIStroke.
+	local stroke = create("UIStroke", {
+		Color = color or Colors.Outline,
+		Thickness = thickness or DEFAULT_STROKE_THICKNESS,
+		Transparency = transparency or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, parent)
+
+	return stroke
+end
+
+local function addGradient(parent, firstColor, secondColor, rotation)
+	-- Добавляет UIGradient с металлическим цветовым переходом.
+	local gradient = create("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, firstColor or Colors.Primary),
+			ColorSequenceKeypoint.new(1, secondColor or Colors.Secondary),
+		}),
+		Rotation = rotation or 90,
+	}, parent)
+
+	return gradient
+end
+
+local function addPadding(parent, left, right, top, bottom)
+	-- Добавляет UIPadding с явными отступами.
+	local padding = create("UIPadding", {
+		PaddingLeft = UDim.new(0, left or 0),
+		PaddingRight = UDim.new(0, right or 0),
+		PaddingTop = UDim.new(0, top or 0),
+		PaddingBottom = UDim.new(0, bottom or 0),
+	}, parent)
+
+	return padding
+end
+
+local function addListLayout(parent, padding, horizontal)
+	-- Добавляет вертикальный или горизонтальный UIListLayout.
+	local layout = create("UIListLayout", {
+		FillDirection = horizontal and Enum.FillDirection.Horizontal or Enum.FillDirection.Vertical,
+		HorizontalAlignment = Enum.HorizontalAlignment.Left,
+		VerticalAlignment = Enum.VerticalAlignment.Top,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, padding or 6),
+	}, parent)
+
+	return layout
+end
+
+--================================================================================
+-- [004] СИГНАЛЫ И АНИМАЦИИ
+--================================================================================
+
+local function createSignal()
+	-- Создаёт небольшой объект-сигнал с Connect, Fire и Disconnect.
+	local listeners = {}
+	local signal = {}
+
+	function signal:Connect(callback)
+		-- Подписывает функцию на пользовательский сигнал.
+		if type(callback) ~= "function" then
+			return nil
+		end
+
+		table.insert(listeners, callback)
+		local disconnected = false
+		local connection = {}
+
+		function connection:Disconnect()
+			-- Отключает одну подписку сигнала.
+			if disconnected then
+				return false
+			end
+
+			disconnected = true
+			for index = #listeners, 1, -1 do
+				if listeners[index] == callback then
+					table.remove(listeners, index)
+					return true
+				end
+			end
+
+			return false
+		end
+
+		return connection
+	end
+
+	function signal:Fire(first, second, third, fourth, fifth)
+		-- Вызывает все текущие обработчики сигнала.
+		local snapshot = {}
+		for index, callback in ipairs(listeners) do
+			snapshot[index] = callback
+		end
+
+		for _, callback in ipairs(snapshot) do
+			pcall(callback, first, second, third, fourth, fifth)
+		end
+	end
+
+	function signal:Destroy()
+		-- Очищает все обработчики сигнала.
+		for index = #listeners, 1, -1 do
+			listeners[index] = nil
+		end
+	end
+
+	return signal
+end
+
+local function getAnimationTime()
+	-- Возвращает длительность Tween-анимации из config.lua.
+	local duration = setting("UI.AnimationDuration", DEFAULT_ANIMATION_TIME)
+	if type(duration) ~= "number" then
+		return DEFAULT_ANIMATION_TIME
+	end
+
+	return math.max(0.15, math.min(0.3, duration))
+end
+
+local function tween(instance, properties, duration, style, direction)
+	-- Плавно меняет свойства экземпляра через TweenService.
+	if not isAlive(instance) or not Services.TweenService then
+		setProperties(instance, properties)
+		return nil
+	end
+
+	local tweenInfo = TweenInfo.new(
+		duration or getAnimationTime(),
+		style or Enum.EasingStyle.Quad,
+		direction or Enum.EasingDirection.Out
+	)
+
+	local ok, animation = pcall(function()
+		return Services.TweenService:Create(instance, tweenInfo, properties)
+	end)
+
+	if not ok or not animation then
+		setProperties(instance, properties)
+		return nil
+	end
+
+	animation:Play()
+	return animation
+end
+
+local function connectSignal(signal, callback, connectionList)
+	-- Подключает Roblox-сигнал и сохраняет соединение для очистки окна.
+	if signal == nil or type(callback) ~= "function" then
+		return nil
+	end
+
+	local ok, connection = pcall(function()
+		return signal:Connect(callback)
+	end)
+
+	if ok and connection then
+		table.insert(connectionList, connection)
+		return connection
+	end
+
+	return nil
+end
+
+--================================================================================
+-- [005] ТИПОГРАФИКА
+--================================================================================
+
+local function styleText(label, size, color, alignment)
+	-- Применяет единый стиль текста к TextLabel или TextButton.
+	setProperties(label, {
+		Font = Enum.Font.Gotham,
+		TextSize = size or 14,
+		TextColor3 = color or Colors.Text,
+		TextXAlignment = alignment or Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		TextWrapped = false,
+		BackgroundTransparency = 1,
+	})
+
+	return label
+end
+
+local function createTextLabel(parent, text, size, color)
+	-- Создаёт стилизованный TextLabel.
+	local label = create("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 24),
+		Text = tostring(text or ""),
+	}, parent)
+
+	if label then
+		styleText(label, size, color)
+	end
+
+	return label
+end
+
+local function createTextButton(parent, text, size, color)
+	-- Создаёт стилизованную кнопку текста.
+	local button = create("TextButton", {
+		AutoButtonColor = false,
+		Size = UDim2.new(1, 0, 0, 34),
+		Text = tostring(text or ""),
+	}, parent)
+
+	if button then
+		styleText(button, size, color)
+	end
+
+	return button
+end
+
+--================================================================================
+-- [006] СОЗДАНИЕ ROOT GUI
+--================================================================================
+
+local function getPlayerGui()
+	-- Находит PlayerGui локального игрока без использования CoreGui.
+	local player = Runtime.GetLocalPlayer()
+	if not player then
+		return nil
+	end
+
+	local ok, playerGui = pcall(function()
+		return player:FindFirstChildOfClass("PlayerGui")
+	end)
+
+	if ok and playerGui then
+		return playerGui
+	end
+
+	local waited, result = pcall(function()
+		return player:WaitForChild("PlayerGui", 5)
+	end)
+
+	if waited then
+		return result
+	end
+
+	return nil
+end
+
+local function createScreenGui(name)
+	-- Создаёт ScreenGui в PlayerGui локального игрока.
+	local playerGui = getPlayerGui()
+	if not playerGui then
+		return nil
+	end
+
+	local oldGui = playerGui:FindFirstChild(name)
+	if oldGui then
+		safeDestroy(oldGui)
+	end
+
+	local screenGui = create("ScreenGui", {
+		Name = name,
+		ResetOnSpawn = false,
+		IgnoreGuiInset = false,
+		DisplayOrder = 20,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	}, playerGui)
+
+	return screenGui
+end
+
+--================================================================================
+-- [007] WINDOW: ОСНОВНАЯ КОНСТРУКЦИЯ
+--================================================================================
+
+function UI.CreateWindow(options)
+	-- Создаёт окно библиотеки с сайдбаром, поиском и областью вкладок.
+	options = type(options) == "table" and options or {}
+
+	local window = {
+		Name = tostring(options.Name or "BoykisserHub"),
+		Title = tostring(options.Title or "♡ Boykisser Hub ♡ v10.0"),
+		Subtitle = tostring(options.Subtitle or "Roblox Studio learning toolkit"),
+		Connections = {},
+		Tabs = {},
+		TabOrder = {},
+		CurrentTab = nil,
+		Visible = true,
+		Compact = options.Compact == true or setting("UI.CompactSidebar", false) == true,
+		Destroyed = false,
+		Changed = createSignal(),
+	}
+
+	local screenGui = createScreenGui(window.Name)
+	if not screenGui then
+		return nil, "PlayerGui не найден"
+	end
+
+	window.Gui = screenGui
+
+	local rootScale = create("UIScale", {
+		Scale = tonumber(options.Scale) or setting("UI.Scale", 1),
+	}, screenGui)
+	window.Scale = rootScale
+
+	local root = create("Frame", {
+		Name = "WindowRoot",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0, options.Width or DEFAULT_WINDOW_WIDTH, 0, options.Height or DEFAULT_WINDOW_HEIGHT),
+		BackgroundColor3 = Colors.Background,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+	}, screenGui)
+	window.Root = root
+	addCorner(root, 14)
+	addStroke(root, Colors.Outline, DEFAULT_STROKE_THICKNESS)
+	addGradient(root, Colors.Background, Colors.Panel, 135)
+
+	local topbar = create("Frame", {
+		Name = "Topbar",
+		Size = UDim2.new(1, 0, 0, 58),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, root)
+	window.Topbar = topbar
+	addGradient(topbar, Colors.Primary, Colors.PanelLight, 0)
+	addStroke(topbar, Colors.Outline, 1)
+
+	local title = createTextLabel(topbar, window.Title, 18, Colors.Text)
+	title.Name = "Title"
+	title.Position = UDim2.new(0, 18, 0, 7)
+	title.Size = UDim2.new(1, -180, 0, 25)
+	title.Font = Enum.Font.GothamBold
+	window.TitleLabel = title
+
+	local subtitle = createTextLabel(topbar, window.Subtitle, 11, Colors.MutedText)
+	subtitle.Name = "Subtitle"
+	subtitle.Position = UDim2.new(0, 19, 0, 32)
+	subtitle.Size = UDim2.new(1, -180, 0, 18)
+	window.SubtitleLabel = subtitle
+
+	local minimizeButton = createTextButton(topbar, "—", 20, Colors.Text)
+	minimizeButton.Name = "Minimize"
+	minimizeButton.AnchorPoint = Vector2.new(1, 0.5)
+	minimizeButton.Position = UDim2.new(1, -40, 0.5, 0)
+	minimizeButton.Size = UDim2.new(0, 28, 0, 28)
+	addCorner(minimizeButton, 8)
+	addStroke(minimizeButton, Colors.Outline, 1)
+	window.MinimizeButton = minimizeButton
+
+	local closeButton = createTextButton(topbar, "×", 22, Colors.Text)
+	closeButton.Name = "Close"
+	closeButton.AnchorPoint = Vector2.new(1, 0.5)
+	closeButton.Position = UDim2.new(1, -8, 0.5, 0)
+	closeButton.Size = UDim2.new(0, 28, 0, 28)
+	addCorner(closeButton, 8)
+	addStroke(closeButton, Colors.Outline, 1)
+	window.CloseButton = closeButton
+
+	local body = create("Frame", {
+		Name = "Body",
+		Position = UDim2.new(0, 0, 0, 58),
+		Size = UDim2.new(1, 0, 1, -58),
+		BackgroundTransparency = 1,
+	}, root)
+	window.Body = body
+
+	local sidebarWidth = window.Compact and DEFAULT_COMPACT_SIDEBAR_WIDTH or setting("UI.SidebarWidth", DEFAULT_SIDEBAR_WIDTH)
+	local sidebar = create("Frame", {
+		Name = "Sidebar",
+		Size = UDim2.new(0, sidebarWidth, 1, 0),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, body)
+	window.Sidebar = sidebar
+	addGradient(sidebar, Colors.Panel, Colors.Background, 90)
+	addStroke(sidebar, Colors.Outline, 1)
+
+	local search = create("TextBox", {
+		Name = "Search",
+		PlaceholderText = "Search tabs",
+		Text = "",
+		ClearTextOnFocus = false,
+		Position = UDim2.new(0, 8, 0, 8),
+		Size = UDim2.new(1, -16, 0, 32),
+		BackgroundColor3 = Colors.Background,
+		BorderSizePixel = 0,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextColor3 = Colors.Text,
+		PlaceholderColor3 = Colors.MutedText,
+	}, sidebar)
+	window.Search = search
+	addCorner(search, 8)
+	addStroke(search, Colors.Outline, 1)
+	addPadding(search, 10, 8, 0, 0)
+
+	local scroll = create("ScrollingFrame", {
+		Name = "TabScroll",
+		Position = UDim2.new(0, 7, 0, 48),
+		Size = UDim2.new(1, -14, 1, -88),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = Colors.Primary,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, sidebar)
+	window.TabScroll = scroll
+	addListLayout(scroll, 4, false)
+	addPadding(scroll, 1, 1, 3, 3)
+
+	local scrollUp = createTextButton(sidebar, "▲", 12, Colors.MutedText)
+	scrollUp.Name = "ScrollUp"
+	scrollUp.Position = UDim2.new(0, 8, 1, -35)
+	scrollUp.Size = UDim2.new(0.5, -10, 0, 26)
+	addCorner(scrollUp, 7)
+
+	local scrollDown = createTextButton(sidebar, "▼", 12, Colors.MutedText)
+	scrollDown.Name = "ScrollDown"
+	scrollDown.Position = UDim2.new(0.5, 2, 1, -35)
+	scrollDown.Size = UDim2.new(0.5, -10, 0, 26)
+	addCorner(scrollDown, 7)
+
+	local content = create("Frame", {
+		Name = "Content",
+		Position = UDim2.new(0, sidebarWidth, 0, 0),
+		Size = UDim2.new(1, -sidebarWidth, 1, 0),
+		BackgroundTransparency = 1,
+	}, body)
+	window.Content = content
+
+	local statsPanel = create("Frame", {
+		Name = "StatsPanel",
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, -12, 1, -10),
+		Size = UDim2.new(0, 260, 0, 36),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, content)
+	window.StatsPanel = statsPanel
+	addCorner(statsPanel, 8)
+	addStroke(statsPanel, Colors.Outline, 1)
+
+	local statsLabel = createTextLabel(statsPanel, "Session: 00:00  •  Objects: 0  •  Ready", 11, Colors.MutedText)
+	statsLabel.Position = UDim2.new(0, 10, 0, 0)
+	statsLabel.Size = UDim2.new(1, -20, 1, 0)
+	statsLabel.TextXAlignment = Enum.TextXAlignment.Center
+	window.StatsLabel = statsLabel
+
+	local tabContent = create("Frame", {
+		Name = "TabContent",
+		Position = UDim2.new(0, 0, 0, 0),
+		Size = UDim2.new(1, 0, 1, -48),
+		BackgroundTransparency = 1,
+	}, content)
+	window.TabContent = tabContent
+
+	local emptyState = createTextLabel(tabContent, "Выбери вкладку слева", 16, Colors.MutedText)
+	emptyState.AnchorPoint = Vector2.new(0.5, 0.5)
+	emptyState.Position = UDim2.fromScale(0.5, 0.45)
+	emptyState.Size = UDim2.new(0.8, 0, 0, 36)
+	emptyState.TextXAlignment = Enum.TextXAlignment.Center
+	window.EmptyState = emptyState
+
+	local function updateCanvas()
+		-- Обновляет область прокрутки после добавления или скрытия вкладок.
+		if not isAlive(scroll) then
+			return
+		end
+
+		pcall(function()
+			scroll.CanvasSize = UDim2.new(0, 0, 0, scroll.AbsoluteCanvasSize.Y)
+		end)
+	end
+
+	local function setTabButtonState(tab, selected)
+		-- Применяет активное или обычное состояние кнопки вкладки.
+		if not tab or not isAlive(tab.Button) then
+			return
+		end
+
+		local targetColor = selected and Colors.Primary or Colors.Panel
+		local targetTextColor = selected and Colors.Text or Colors.MutedText
+		tween(tab.Button, {
+			BackgroundColor3 = targetColor,
+			TextColor3 = targetTextColor,
+		}, getAnimationTime())
+	end
+
+	function window:SelectTab(tabName)
+		-- Переключает область контента на вкладку по имени.
+		if self.Destroyed then
+			return false
+		end
+
+		local selectedTab = self.Tabs[tabName]
+		if not selectedTab then
+			return false
+		end
+
+		for _, tab in ipairs(self.TabOrder) do
+			local selected = tab == selectedTab
+			setTabButtonState(tab, selected)
+
+			if isAlive(tab.Page) then
+				tab.Page.Visible = selected
+			end
+		end
+
+		self.CurrentTab = selectedTab
+		if isAlive(self.EmptyState) then
+			self.EmptyState.Visible = false
+		end
+		self.Changed:Fire("Tab", tabName)
+		return true
+	end
+
+	function window:AddTab(tabOptions)
+		-- Создаёт вкладку и возвращает объект для добавления контролов.
+		if self.Destroyed then
+			return nil, "Окно уничтожено"
+		end
+
+		tabOptions = type(tabOptions) == "table" and tabOptions or {}
+		local tabName = tostring(tabOptions.Name or ("Tab " .. tostring(#self.TabOrder + 1)))
+		if self.Tabs[tabName] then
+			return self.Tabs[tabName]
+		end
+
+		local button = createTextButton(scroll, tostring(tabOptions.Title or tabName), 12, Colors.MutedText)
+		button.Name = "Tab_" .. tabName:gsub("%W", "_")
+		button.Size = UDim2.new(1, 0, 0, 32)
+		button.LayoutOrder = #self.TabOrder + 1
+		button.TextTruncate = Enum.TextTruncate.AtEnd
+		addCorner(button, 8)
+
+		local page = create("ScrollingFrame", {
+			Name = "Page_" .. tabName:gsub("%W", "_"),
+			Size = UDim2.new(1, -22, 1, -12),
+			Position = UDim2.new(0, 11, 0, 6),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 4,
+			ScrollBarImageColor3 = Colors.Primary,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			Visible = false,
+		}, tabContent)
+		addPadding(page, 4, 4, 4, 54)
+		local pageLayout = addListLayout(page, 8, false)
+
+		local tab = {
+			Name = tabName,
+			Title = tostring(tabOptions.Title or tabName),
+			Icon = tostring(tabOptions.Icon or ""),
+			Button = button,
+			Page = page,
+			Layout = pageLayout,
+			Controls = {},
+			Changed = createSignal(),
+			Window = self,
+		}
+
+		self.Tabs[tabName] = tab
+		table.insert(self.TabOrder, tab)
+
+		connectSignal(button.Activated, function()
+			-- Выбирает вкладку при клике мышью или касании.
+			self:SelectTab(tabName)
+		end, self.Connections)
+
+		connectSignal(button.MouseEnter, function()
+			-- Подсвечивает вкладку при наведении мыши.
+			if self.CurrentTab ~= tab then
+				tween(button, {BackgroundColor3 = Colors.PanelLight}, getAnimationTime())
+			end
+		end, self.Connections)
+
+		connectSignal(button.MouseLeave, function()
+			-- Возвращает обычный цвет после ухода мыши.
+			if self.CurrentTab ~= tab then
+				tween(button, {BackgroundColor3 = Colors.Panel}, getAnimationTime())
+			end
+		end, self.Connections)
+
+		connectSignal(page:GetPropertyChangedSignal("AbsoluteCanvasSize"), function()
+			-- Поддерживает корректную область прокрутки страницы.
+			pcall(function()
+				page.CanvasSize = UDim2.new(0, 0, 0, page.AbsoluteCanvasSize.Y)
+			end)
+		end, self.Connections)
+
+		updateCanvas()
+
+		if not self.CurrentTab then
+			self:SelectTab(tabName)
+		end
+
+		return tab
+	end
+
+	function window:FilterTabs(query)
+		-- Фильтрует вкладки по строке поиска.
+		query = string.lower(tostring(query or ""))
+
+		for _, tab in ipairs(self.TabOrder) do
+			local searchable = string.lower(tab.Name .. " " .. tab.Title)
+			local visible = query == "" or string.find(searchable, query, 1, true) ~= nil
+			tab.Button.Visible = visible
+		end
+
+		updateCanvas()
+	end
+
+	connectSignal(search:GetPropertyChangedSignal("Text"), function()
+		-- Фильтрует вкладки при изменении строки поиска.
+		window:FilterTabs(search.Text)
+	end, window.Connections)
+
+	connectSignal(scrollUp.Activated, function()
+		-- Прокручивает список вкладок вверх.
+		scroll.CanvasPosition = Vector2.new(0, math.max(0, scroll.CanvasPosition.Y - 120))
+	end, window.Connections)
+
+	connectSignal(scrollDown.Activated, function()
+		-- Прокручивает список вкладок вниз.
+		scroll.CanvasPosition = Vector2.new(0, scroll.CanvasPosition.Y + 120)
+	end, window.Connections)
+
+	connectSignal(scroll.InputChanged, function(input)
+		-- Обрабатывает колесо мыши для прокрутки вкладок.
+		if input.UserInputType == Enum.UserInputType.MouseWheel then
+			local delta = input.Position.Z
+			scroll.CanvasPosition = Vector2.new(0, math.max(0, scroll.CanvasPosition.Y - delta * 48))
+		end
+	end, window.Connections)
+
+	connectSignal(minimizeButton.Activated, function()
+		-- Сворачивает и разворачивает тело окна.
+		window:SetVisible(not window.Visible)
+	end, window.Connections)
+
+	connectSignal(closeButton.Activated, function()
+		-- Уничтожает окно по нажатию кнопки закрытия.
+		window:Destroy()
+	end, window.Connections)
+
+	local dragging = false
+	local dragStart
+	local startPosition
+
+	connectSignal(topbar.InputBegan, function(input)
+		-- Начинает перемещение окна мышью или touch.
+		local inputType = input.UserInputType
+		if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPosition = root.Position
+		end
+	end, window.Connections)
+
+	connectSignal(topbar.InputEnded, function(input)
+		-- Завершает перемещение окна.
+		local inputType = input.UserInputType
+		if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end, window.Connections)
+
+	connectSignal(Services.UserInputService and Services.UserInputService.InputChanged, function(input)
+		-- Обновляет позицию окна при перемещении указателя.
+		if not dragging or not dragStart or not startPosition then
+			return
+		end
+
+		local inputType = input.UserInputType
+		if inputType ~= Enum.UserInputType.MouseMovement and inputType ~= Enum.UserInputType.Touch then
+			return
+		end
+
+		local delta = input.Position - dragStart
+		root.Position = UDim2.new(
+			startPosition.X.Scale,
+			startPosition.X.Offset + delta.X,
+			startPosition.Y.Scale,
+			startPosition.Y.Offset + delta.Y
+		)
+	end, window.Connections)
+
+	function window:SetVisible(visible)
+		-- Показывает или скрывает тело окна с плавной анимацией.
+		if self.Destroyed then
+			return false
+		end
+
+		self.Visible = visible == true
+		if isAlive(self.Body) then
+			self.Body.Visible = self.Visible
+		end
+		return self.Visible
+	end
+
+	function window:Toggle()
+		-- Переключает видимость окна.
+		return self:SetVisible(not self.Visible)
+	end
+
+	function window:SetScale(scale)
+		-- Устанавливает масштаб интерфейса в диапазоне 50–150 процентов.
+		if not isAlive(self.Scale) then
+			return false
+		end
+
+		local value = tonumber(scale) or 1
+		value = math.max(0.5, math.min(1.5, value))
+		tween(self.Scale, {Scale = value}, getAnimationTime())
+		self.Changed:Fire("Scale", value)
+		return true, value
+	end
+
+	function window:SetCompact(compact)
+		-- Переключает компактный режим сайдбара.
+		if self.Destroyed or not isAlive(self.Sidebar) then
+			return false
+		end
+
+		self.Compact = compact == true
+		local width = self.Compact and DEFAULT_COMPACT_SIDEBAR_WIDTH or setting("UI.SidebarWidth", DEFAULT_SIDEBAR_WIDTH)
+		tween(self.Sidebar, {Size = UDim2.new(0, width, 1, 0)}, getAnimationTime())
+		tween(self.Content, {
+			Position = UDim2.new(0, width, 0, 0),
+			Size = UDim2.new(1, -width, 1, 0),
+		}, getAnimationTime())
+
+		if isAlive(self.Search) then
+			self.Search.Visible = not self.Compact
+		end
+
+		return true
+	end
+
+	function window:UpdateStats(data)
+		-- Обновляет нижнюю панель статистики окна.
+		if not isAlive(self.StatsLabel) then
+			return false
+		end
+
+		data = type(data) == "table" and data or {}
+		local session = tostring(data.Session or "00:00")
+		local objects = tostring(data.Objects or 0)
+		local status = tostring(data.Status or "Ready")
+		self.StatsLabel.Text = string.format("Session: %s  •  Objects: %s  •  %s", session, objects, status)
+		return true
+	end
+
+	function window:AddNotification(message, kind, duration)
+		-- Создаёт временное уведомление в правом нижнем углу окна.
+		message = tostring(message or "")
+		kind = tostring(kind or "Info")
+		duration = tonumber(duration) or 3
+
+		local color = Colors.Primary
+		if kind == "Success" then
+			color = Colors.Success
+		elseif kind == "Warning" then
+			color = Colors.Warning
+		elseif kind == "Error" then
+			color = Colors.Error
+		end
+
+		local notification = create("TextLabel", {
+			Name = "Notification",
+			AnchorPoint = Vector2.new(1, 1),
+			Position = UDim2.new(1, 360, 1, -58),
+			Size = UDim2.new(0, 340, 0, 42),
+			BackgroundColor3 = Colors.Panel,
+			BorderSizePixel = 0,
+			Text = message,
+			TextColor3 = Colors.Text,
+			TextSize = 13,
+			Font = Enum.Font.Gotham,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			TextWrapped = true,
+		}, self.Content)
+
+		if not notification then
+			return nil
+		end
+
+		addCorner(notification, 9)
+		addStroke(notification, color, 1.5)
+		addPadding(notification, 12, 10, 0, 0)
+		tween(notification, {Position = UDim2.new(1, -12, 1, -58)}, getAnimationTime())
+
+		local delayFunction = task and task.delay
+		if type(delayFunction) == "function" then
+			delayFunction(duration, function()
+				if isAlive(notification) then
+					local animation = tween(notification, {
+						Position = UDim2.new(1, 360, 1, -58),
+						TextTransparency = 1,
+					}, getAnimationTime())
+
+					if animation then
+						animation.Completed:Wait()
+					end
+					safeDestroy(notification)
+				end
+			end)
+		end
+
+		return notification
+	end
+
+	function window:Destroy()
+		-- Отключает события, сигналы и уничтожает весь UI.
+		if self.Destroyed then
+			return false
+		end
+
+		self.Destroyed = true
+		for index = #self.Connections, 1, -1 do
+			local connection = self.Connections[index]
+			pcall(function()
+				connection:Disconnect()
+			end)
+			self.Connections[index] = nil
+		end
+
+		self.Changed:Destroy()
+		for _, tab in ipairs(self.TabOrder) do
+			tab.Changed:Destroy()
+		end
+
+		safeDestroy(self.Gui)
+		for index = #Windows, 1, -1 do
+			if Windows[index] == self then
+				table.remove(Windows, index)
+				break
+			end
+		end
+
+		return true
+	end
+
+	table.insert(Windows, window)
+	return window
+end
+
+--================================================================================
+-- [008] КОМПОНЕНТЫ ВКЛАДКИ
+--================================================================================
+
+function UI.AddSection(tab, title, description)
+	-- Добавляет заголовок секции на вкладку.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	local holder = create("Frame", {
+		Name = "Section",
+		Size = UDim2.new(1, 0, 0, description and 54 or 32),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, tab.Page)
+	addCorner(holder, 9)
+	addStroke(holder, Colors.Outline, 1)
+	addGradient(holder, Colors.PanelLight, Colors.Panel, 0)
+
+	local heading = createTextLabel(holder, tostring(title or "Section"), 15, Colors.Text)
+	heading.Position = UDim2.new(0, 12, 0, 5)
+	heading.Size = UDim2.new(1, -24, 0, 22)
+	heading.Font = Enum.Font.GothamBold
+
+	if description then
+		local detail = createTextLabel(holder, tostring(description), 11, Colors.MutedText)
+		detail.Position = UDim2.new(0, 12, 0, 28)
+		detail.Size = UDim2.new(1, -24, 0, 18)
+	end
+
+	table.insert(tab.Controls, holder)
+	return holder
+end
+
+function UI.AddLabel(tab, text, options)
+	-- Добавляет текстовую информационную строку.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	options = type(options) == "table" and options or {}
+	local label = createTextLabel(tab.Page, tostring(text or ""), options.TextSize or 13, options.Color or Colors.MutedText)
+	label.Name = tostring(options.Name or "Label")
+	label.Size = UDim2.new(1, 0, 0, options.Height or 28)
+	label.TextWrapped = options.Wrapped == true
+	label.TextXAlignment = options.Alignment or Enum.TextXAlignment.Left
+
+	if options.Background then
+		label.BackgroundTransparency = 0
+		label.BackgroundColor3 = options.Background
+		addCorner(label, 8)
+		addPadding(label, 10, 10, 0, 0)
+	end
+
+	table.insert(tab.Controls, label)
+	return label
+end
+
+function UI.AddButton(tab, title, callback, options)
+	-- Добавляет интерактивную кнопку с поддержкой мыши и touch.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	options = type(options) == "table" and options or {}
+	local button = createTextButton(tab.Page, tostring(title or "Button"), options.TextSize or 13, Colors.Text)
+	button.Name = tostring(options.Name or "Button")
+	button.Size = UDim2.new(1, 0, 0, options.Height or 36)
+	button.BackgroundColor3 = options.Color or Colors.PanelLight
+	addCorner(button, options.Radius or 8)
+	addStroke(button, Colors.Outline, 1)
+
+	local control = {
+		Instance = button,
+		Changed = createSignal(),
+	}
+
+	connectSignal(button.Activated, function()
+		-- Вызывает callback кнопки при активации.
+		if type(callback) == "function" then
+			pcall(callback, control)
+		end
+		control.Changed:Fire("Activated")
+	end, tab.Window.Connections)
+
+	connectSignal(button.MouseEnter, function()
+		-- Повышает яркость кнопки при наведении мыши.
+		tween(button, {BackgroundColor3 = Colors.Primary}, getAnimationTime())
+	end, tab.Window.Connections)
+
+	connectSignal(button.MouseLeave, function()
+		-- Возвращает цвет кнопки после наведения.
+		tween(button, {BackgroundColor3 = options.Color or Colors.PanelLight}, getAnimationTime())
+	end, tab.Window.Connections)
+
+	function control:SetText(value)
+		-- Меняет текст кнопки.
+		button.Text = tostring(value or "")
+	end
+
+	function control:Destroy()
+		-- Уничтожает кнопку и её сигнал.
+		self.Changed:Destroy()
+		safeDestroy(button)
+	end
+
+	table.insert(tab.Controls, control)
+	return control
+end
+
+function UI.AddToggle(tab, title, defaultValue, callback, options)
+	-- Добавляет переключатель с безопасным локальным состоянием.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	options = type(options) == "table" and options or {}
+	local holder = create("Frame", {
+		Name = tostring(options.Name or "Toggle"),
+		Size = UDim2.new(1, 0, 0, options.Height or 42),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, tab.Page)
+	addCorner(holder, 8)
+	addStroke(holder, Colors.Outline, 1)
+
+	local label = createTextLabel(holder, tostring(title or "Toggle"), 13, Colors.Text)
+	label.Position = UDim2.new(0, 12, 0, 0)
+	label.Size = UDim2.new(1, -76, 1, 0)
+
+	local switch = create("TextButton", {
+		Name = "Switch",
+		AutoButtonColor = false,
+		Text = "",
+		Position = UDim2.new(1, -58, 0.5, -12),
+		Size = UDim2.new(0, 46, 0, 24),
+		BackgroundColor3 = Colors.Background,
+		BorderSizePixel = 0,
+	}, holder)
+	addCorner(switch, 12)
+	addStroke(switch, Colors.Outline, 1)
+
+	local knob = create("Frame", {
+		Name = "Knob",
+		Position = UDim2.new(0, 3, 0.5, -8),
+		Size = UDim2.new(0, 16, 0, 16),
+		BackgroundColor3 = Colors.MutedText,
+		BorderSizePixel = 0,
+	}, switch)
+	addCorner(knob, 8)
+
+	local control = {
+		Instance = holder,
+		Button = switch,
+		Value = defaultValue == true,
+		Changed = createSignal(),
+	}
+
+	local function render()
+		-- Обновляет визуальное состояние переключателя.
+		local targetColor = control.Value and Colors.Primary or Colors.Background
+		local knobX = control.Value and 27 or 3
+		tween(switch, {BackgroundColor3 = targetColor}, getAnimationTime())
+		tween(knob, {Position = UDim2.new(0, knobX, 0.5, -8)}, getAnimationTime())
+	end
+
+	function control:Set(value, silent)
+		-- Устанавливает значение переключателя и вызывает callback.
+		control.Value = value == true
+		render()
+
+		if not silent then
+			if type(callback) == "function" then
+				pcall(callback, control.Value, control)
+			end
+			control.Changed:Fire(control.Value)
+		end
+
+		return control.Value
+	end
+
+	function control:Get()
+		-- Возвращает текущее логическое значение переключателя.
+		return control.Value
+	end
+
+	function control:Destroy()
+		-- Уничтожает переключатель.
+		self.Changed:Destroy()
+		safeDestroy(holder)
+	end
+
+	connectSignal(switch.Activated, function()
+		-- Инвертирует переключатель по нажатию.
+		control:Set(not control.Value)
+	end, tab.Window.Connections)
+
+	render()
+	table.insert(tab.Controls, control)
+	return control
+end
+
+function UI.AddSlider(tab, title, minimum, maximum, defaultValue, callback, options)
+	-- Добавляет числовой ползунок с touch и мышью.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	options = type(options) == "table" and options or {}
+	minimum = tonumber(minimum) or 0
+	maximum = tonumber(maximum) or 100
+	if maximum <= minimum then
+		maximum = minimum + 1
+	end
+
+	local holder = create("Frame", {
+		Name = tostring(options.Name or "Slider"),
+		Size = UDim2.new(1, 0, 0, options.Height or 60),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+	}, tab.Page)
+	addCorner(holder, 8)
+	addStroke(holder, Colors.Outline, 1)
+
+	local label = createTextLabel(holder, tostring(title or "Slider"), 13, Colors.Text)
+	label.Position = UDim2.new(0, 12, 0, 4)
+	label.Size = UDim2.new(0.7, 0, 0, 22)
+
+	local valueLabel = createTextLabel(holder, "", 12, Colors.Secondary)
+	valueLabel.Position = UDim2.new(0.7, -12, 0, 4)
+	valueLabel.Size = UDim2.new(0.3, 0, 0, 22)
+	valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+	local bar = create("Frame", {
+		Name = "Bar",
+		Position = UDim2.new(0, 12, 0, 36),
+		Size = UDim2.new(1, -24, 0, 8),
+		BackgroundColor3 = Colors.Background,
+		BorderSizePixel = 0,
+	}, holder)
+	addCorner(bar, 4)
+
+	local fill = create("Frame", {
+		Name = "Fill",
+		Size = UDim2.new(0, 0, 1, 0),
+		BackgroundColor3 = Colors.Primary,
+		BorderSizePixel = 0,
+	}, bar)
+	addCorner(fill, 4)
+	addGradient(fill, Colors.Primary, Colors.Secondary, 0)
+
+	local control = {
+		Instance = holder,
+		Value = tonumber(defaultValue) or minimum,
+		Minimum = minimum,
+		Maximum = maximum,
+		Changed = createSignal(),
+	}
+
+	local function quantize(value)
+		-- Ограничивает и округляет значение ползунка.
+		local step = tonumber(options.Step) or 1
+		local bounded = math.max(minimum, math.min(maximum, value))
+		return math.floor((bounded - minimum) / step + 0.5) * step + minimum
+	end
+
+	local function render()
+		-- Отрисовывает положение заполнения и числовую подпись.
+		local ratio = (control.Value - minimum) / (maximum - minimum)
+		ratio = math.max(0, math.min(1, ratio))
+		tween(fill, {Size = UDim2.new(ratio, 0, 1, 0)}, getAnimationTime())
+		valueLabel.Text = string.format("%g", control.Value)
+	end
+
+	function control:Set(value, silent)
+		-- Устанавливает число и вызывает callback при изменении.
+		control.Value = quantize(tonumber(value) or minimum)
+		render()
+
+		if not silent then
+			if type(callback) == "function" then
+				pcall(callback, control.Value, control)
+			end
+			control.Changed:Fire(control.Value)
+		end
+
+		return control.Value
+	end
+
+	function control:Get()
+		-- Возвращает текущее значение ползунка.
+		return control.Value
+	end
+
+	local draggingSlider = false
+
+	local function updateFromInput(inputX)
+		-- Пересчитывает число по горизонтальной координате указателя.
+		local absolutePosition = bar.AbsolutePosition.X
+		local absoluteSize = math.max(1, bar.AbsoluteSize.X)
+		local ratio = math.max(0, math.min(1, (inputX - absolutePosition) / absoluteSize))
+		control:Set(minimum + (maximum - minimum) * ratio)
+	end
+
+	connectSignal(bar.InputBegan, function(input)
+		-- Начинает изменение ползунка мышью или touch.
+		local inputType = input.UserInputType
+		if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+			draggingSlider = true
+			updateFromInput(input.Position.X)
+		end
+	end, tab.Window.Connections)
+
+	connectSignal(bar.InputEnded, function(input)
+		-- Завершает изменение ползунка.
+		local inputType = input.UserInputType
+		if inputType == Enum.UserInputType.MouseButton1 or inputType == Enum.UserInputType.Touch then
+			draggingSlider = false
+		end
+	end, tab.Window.Connections)
+
+	connectSignal(Services.UserInputService and Services.UserInputService.InputChanged, function(input)
+		-- Обновляет ползунок во время перемещения указателя.
+		if not draggingSlider then
+			return
+		end
+
+		local inputType = input.UserInputType
+		if inputType == Enum.UserInputType.MouseMovement or inputType == Enum.UserInputType.Touch then
+			updateFromInput(input.Position.X)
+		end
+	end, tab.Window.Connections)
+
+	function control:Destroy()
+		-- Уничтожает ползунок.
+		self.Changed:Destroy()
+		safeDestroy(holder)
+	end
+
+	control:Set(control.Value, true)
+	table.insert(tab.Controls, control)
+	return control
+end
+
+function UI.AddDropdown(tab, title, optionsList, defaultValue, callback, options)
+	-- Добавляет выпадающий список значений.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	options = type(options) == "table" and options or {}
+	optionsList = type(optionsList) == "table" and optionsList or {}
+
+	local holder = create("Frame", {
+		Name = tostring(options.Name or "Dropdown"),
+		Size = UDim2.new(1, 0, 0, 42),
+		BackgroundColor3 = Colors.Panel,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+	}, tab.Page)
+	addCorner(holder, 8)
+	addStroke(holder, Colors.Outline, 1)
+
+	local button = createTextButton(holder, "", 13, Colors.Text)
+	button.Position = UDim2.new(0, 8, 0, 4)
+	button.Size = UDim2.new(1, -16, 0, 34)
+	button.TextXAlignment = Enum.TextXAlignment.Left
+	addPadding(button, 8, 8, 0, 0)
+	addCorner(button, 7)
+
+	local menu = create("Frame", {
+		Name = "Menu",
+		Position = UDim2.new(0, 8, 0, 43),
+		Size = UDim2.new(1, -16, 0, 0),
+		BackgroundColor3 = Colors.Background,
+		BorderSizePixel = 0,
+		Visible = false,
+	}, holder)
+	addCorner(menu, 7)
+	addStroke(menu, Colors.Outline, 1)
+	local menuLayout = addListLayout(menu, 2, false)
+	addPadding(menu, 4, 4, 4, 4)
+
+	local control = {
+		Instance = holder,
+		Value = defaultValue,
+		Options = optionsList,
+		Open = false,
+		Changed = createSignal(),
+	}
+
+	local function updateText()
+		-- Обновляет подпись выбранного элемента.
+		button.Text = tostring(title or "Select") .. ": " .. tostring(control.Value or "None")
+	end
+
+	local function closeMenu()
+		-- Закрывает список значений.
+		control.Open = false
+		menu.Visible = false
+		holder.Size = UDim2.new(1, 0, 0, 42)
+	end
+
+	local function choose(value)
+		-- Выбирает значение и уведомляет callback.
+		control.Value = value
+		updateText()
+		closeMenu()
+
+		if type(callback) == "function" then
+			pcall(callback, value, control)
+		end
+		control.Changed:Fire(value)
+	end
+
+	for index, value in ipairs(optionsList) do
+		local optionButton = createTextButton(menu, tostring(value), 12, Colors.MutedText)
+		optionButton.Name = "Option_" .. tostring(index)
+		optionButton.Size = UDim2.new(1, 0, 0, 28)
+		optionButton.LayoutOrder = index
+		addCorner(optionButton, 5)
+
+		connectSignal(optionButton.Activated, function()
+			-- Выбирает пункт меню при клике или touch.
+			choose(value)
+		end, tab.Window.Connections)
+	end
+
+	connectSignal(button.Activated, function()
+		-- Открывает или закрывает меню выбора.
+		control.Open = not control.Open
+		menu.Visible = control.Open
+
+		if control.Open then
+			local height = math.min(160, #optionsList * 30 + 10)
+			holder.Size = UDim2.new(1, 0, 0, 48 + height)
+			menu.Size = UDim2.new(1, -16, 0, height)
+		else
+			closeMenu()
+		end
+	end, tab.Window.Connections)
+
+	function control:Set(value, silent)
+		-- Устанавливает выбранное значение из списка.
+		local valid = false
+		for _, option in ipairs(optionsList) do
+			if option == value then
+				valid = true
+				break
+			end
+		end
+
+		if valid then
+			control.Value = value
+			updateText()
+			if not silent then
+				if type(callback) == "function" then
+					pcall(callback, value, control)
+				end
+				control.Changed:Fire(value)
+			end
+		end
+
+		return control.Value
+	end
+
+	function control:Get()
+		-- Возвращает выбранный элемент списка.
+		return control.Value
+	end
+
+	function control:Destroy()
+		-- Уничтожает выпадающий список.
+		self.Changed:Destroy()
+		safeDestroy(holder)
+	end
+
+	updateText()
+	table.insert(tab.Controls, control)
+	return control
+end
+
+function UI.AddSpacer(tab, height)
+	-- Добавляет пустой вертикальный отступ на вкладку.
+	if not tab or not isAlive(tab.Page) then
+		return nil
+	end
+
+	local spacer = create("Frame", {
+		Name = "Spacer",
+		Size = UDim2.new(1, 0, 0, tonumber(height) or 8),
+		BackgroundTransparency = 1,
+	}, tab.Page)
+
+	table.insert(tab.Controls, spacer)
+	return spacer
+end
+
+--================================================================================
+-- [009] ПРЕДУСТАНОВЛЕННЫЕ ВКЛАДКИ
+--================================================================================
+
+local defaultTabs = {
+	{Name = "Main", Title = "Main"},
+	{Name = "Combat", Title = "Combat (Training)"},
+	{Name = "Auto Farm", Title = "Auto Farm (Test Map)"},
+	{Name = "Teleport", Title = "Teleport"},
+	{Name = "Troll Fun", Title = "Troll Fun (Local)"},
+	{Name = "Free Anims", Title = "Free Anims"},
+	{Name = "Fling", Title = "Fling (Disabled)"},
+	{Name = "Visuals", Title = "Visuals"},
+	{Name = "Movement", Title = "Movement"},
+	{Name = "Hitbox", Title = "Hitbox (Training)"},
+	{Name = "Chat", Title = "Chat"},
+	{Name = "Config", Title = "Config"},
+	{Name = "Settings", Title = "Settings"},
+	{Name = "Server", Title = "Server"},
+	{Name = "Credits", Title = "Credits"},
+	{Name = "Debug", Title = "Debug"},
+	{Name = "Stats", Title = "Stats"},
+	{Name = "Macros", Title = "Macros (Local)"},
+	{Name = "Auto Trade", Title = "Auto Trade (Disabled)"},
+	{Name = "Skins", Title = "Skins"},
+	{Name = "World", Title = "World"},
+	{Name = "Effects", Title = "Effects"},
+	{Name = "Tools", Title = "Tools"},
+	{Name = "Performance", Title = "Performance"},
+}
+
+function UI.CreateDefaultTabs(window)
+	-- Создаёт полный набор из 24 вкладок проекта.
+	if not window or type(window.AddTab) ~= "function" then
+		return {}
+	end
+
+	local created = {}
+	for _, tabOptions in ipairs(defaultTabs) do
+		local tab = window:AddTab(tabOptions)
+		if tab then
+			table.insert(created, tab)
+		end
+	end
+
+	return created
+end
+
+function UI.GetDefaultTabNames()
+	-- Возвращает копию списка имён предустановленных вкладок.
+	local names = {}
+	for index, tab in ipairs(defaultTabs) do
+		names[index] = tab.Name
+	end
+
+	return names
+end
+
+--================================================================================
+-- [010] УПРАВЛЕНИЕ ОКНАМИ
+--================================================================================
+
+function UI.GetWindows()
+	-- Возвращает копию списка созданных окон.
+	local result = {}
+	for index, window in ipairs(Windows) do
+		result[index] = window
+	end
+
+	return result
+end
+
+function UI.GetWindow(name)
+	-- Находит окно по имени.
+	for _, window in ipairs(Windows) do
+		if window.Name == name and not window.Destroyed then
+			return window
+		end
+	end
+
+	return nil
+end
+
+function UI.DestroyAll()
+	-- Уничтожает все окна библиотеки и освобождает UI-ресурсы.
+	for index = #Windows, 1, -1 do
+		local window = Windows[index]
+		if window and type(window.Destroy) == "function" then
+			window:Destroy()
+		end
+	end
+end
+
+function UI.SetThemeColor(name, color)
+	-- Обновляет цвет в памяти библиотеки для новых и существующих элементов.
+	if type(name) ~= "string" or color == nil then
+		return false
+	end
+
+	Colors[name] = color
+	return true
+end
+
+function UI.GetTheme()
+	-- Возвращает копию текущей палитры библиотеки.
+	local result = {}
+	for name, color in pairs(Colors) do
+		result[name] = color
+	end
+
+	return result
+end
+
+--================================================================================
+-- [011] ИНФОРМАЦИОННЫЕ МЕТОДЫ
+--================================================================================
+
+function UI.GetPlatformLayout()
+	-- Возвращает параметры адаптивной раскладки для текущей платформы.
+	local platform = "Unknown"
+	pcall(function()
+		platform = Runtime.GetPlatform()
+	end)
+
+	if platform == "Mobile" then
+		return {
+			Platform = platform,
+			Width = 360,
+			Height = 540,
+			Scale = 0.8,
+			Compact = true,
+		}
+	end
+
+	if platform == "Tablet" then
+		return {
+			Platform = platform,
+			Width = 620,
+			Height = 500,
+			Scale = 0.9,
+			Compact = false,
+		}
+	end
+
+	return {
+		Platform = platform,
+		Width = DEFAULT_WINDOW_WIDTH,
+		Height = DEFAULT_WINDOW_HEIGHT,
+		Scale = 1,
+		Compact = false,
+	}
+end
+
+function UI.CreateResponsiveWindow(options)
+	-- Создаёт окно с размерами, адаптированными под платформу.
+	options = type(options) == "table" and options or {}
+	local layout = UI.GetPlatformLayout()
+	local merged = {}
+
+	for key, value in pairs(options) do
+		merged[key] = value
+	end
+
+	if merged.Width == nil then
+		merged.Width = layout.Width
+	end
+	if merged.Height == nil then
+		merged.Height = layout.Height
+	end
+	if merged.Scale == nil then
+		merged.Scale = layout.Scale
+	end
+	if merged.Compact == nil then
+		merged.Compact = layout.Compact
+	end
+
+	return UI.CreateWindow(merged)
+end
+
+function UI.GetVersion()
+	-- Возвращает версию UI-библиотеки.
+	return "10.0.0"
+end
+
+UI.Colors = Colors
+UI.DefaultTabs = defaultTabs
+UI.Version = "10.0.0"
+UI.ProjectName = "♡ Boykisser Hub ♡ v10.0"
+UI.SafeMode = true
+
+return UI
